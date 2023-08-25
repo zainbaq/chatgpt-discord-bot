@@ -94,7 +94,7 @@ if __name__ == '__main__':
         if client.user in message.mentions:
 
             # Get author and print mesage
-            print(f"{message.author} : {message.content}")
+            # print(f"{message.author} : {message.content}")
             author = message.author.name.split('#')[0]
             
             # Here we set up the prompt for the chat bot. We're including the message author so
