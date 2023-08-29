@@ -132,3 +132,7 @@ dmypy.json
 ./experiments
 
 .env
+
+share/
+bin/
+pyenv.cfg

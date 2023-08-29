@@ -55,11 +55,11 @@ if __name__ == '__main__':
     
     # This function runs when an image generation is requested.
     @client.event
-    async def dalle_response(message):
+    async def dalle_response(message, n=1):
         prompt = message.content.split('.dalle ')[-1]
         response = openai.Image.create(
             prompt=prompt,
-            n=1,
+            n=n,
             size="1024x1024"
             )
         url = response['data'][0]['url'] # must be an image
