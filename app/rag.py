@@ -1,6 +1,6 @@
 import chromadb
 from chromadb.config import Settings
-from transformers import AutoTokenizer, AutoModel
+# from transformers import AutoTokenizer, AutoModel
 import torch
 import hashlib
 import uuid
