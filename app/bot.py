@@ -6,6 +6,7 @@ import os
 import io
 import requests
 from dotenv import load_dotenv
+from rag import ConversationVectorStore
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -16,6 +17,9 @@ def load_keys():
     if '.env' in os.listdir():
         load_dotenv()
     return os.environ['OPENAI_KEY'], os.environ['DISCORD_KEY']
+
+def create_vector_store():
+    return ConversationVectorStore()
 
 if __name__ == '__main__':
 
@@ -33,8 +37,23 @@ if __name__ == '__main__':
     HISTORY_LENGTH = 32
     RETENTION_LENGTH = 8
 
+    vectorstore = create_vector_store()
+    
     # Set the system role of the assistant
-    role = "You are a helpful, funny and sarcastic assistant to a group of individuals."
+    role = """
+    You are a helpful, funny and sarcastic assistant to a group of individuals.
+
+    You will receive questions from different users. Answer these questions to the best of your knowledge.
+
+    ** EXAMPLE INPUT **
+    <CONTEXT>
+    <USER_123> : When did Pakistan gain independence?
+
+    ** EXAMPLE OUTPUT **
+    Pakistan gained independence on the 14th of August 1947.
+
+    You may be asked about other users and your goal is to be a part of our group.
+    """
 
     # Discord bot
     client = commands.Bot(command_prefix='!', intents=intents)
@@ -85,6 +104,7 @@ if __name__ == '__main__':
 
     @client.event
     async def on_message(message):
+        print(message)
         global MESSAGES
 
         # Do nothing if bot mentions itself
@@ -99,8 +119,13 @@ if __name__ == '__main__':
             
             # Here we set up the prompt for the chat bot. We're including the message author so
             # it remembers who said what when multiple users are speaking
-            prompt = {"role": "user", "content": f"{author} : {message.content}"}
-            MESSAGES.append(prompt)
+            prompt = f"{author} : {message.content}"
+
+
+
+            prompt_data = {"role": "user", "content": prompt}
+
+            MESSAGES.append(prompt_data)
 
             if '.dalle' in message.content:
                 await dalle_response(message)
