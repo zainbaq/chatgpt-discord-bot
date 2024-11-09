@@ -4,6 +4,8 @@ from transformers import AutoTokenizer, AutoModel
 import torch
 import hashlib
 import uuid
+from openai import OpenAI
+from chromadb.errors import DuplicateIDError
 
 def generate_consistent_guid(param1):
     if param1 is None:
@@ -39,40 +41,50 @@ class ConversationVectorStore:
     def insert_conversation_to_memory(self, interaction):
 
         ids = [generate_consistent_guid(x) for x in interaction]
-        vector = [self.embed(x)[0].tolist()[0] for x in interaction]
+        vector = [self.embed(x) for x in interaction]
 
-        self.conv_collection.upsert(
-                ids=ids,
-                documents=interaction,
-                embeddings=vector,
-                # metadatas=[metadata]
-            )
+        try:
+            self.conv_collection.upsert(
+                    ids=ids,
+                    documents=interaction,
+                    embeddings=vector,
+                    # metadatas=[metadata]
+                )
+        except DuplicateIDError as e:
+            print('[WARNING] Record already exists.')
+            print(e)
 
+    def embed(self, text, model_name="text-embedding-ada-002"):
+        # tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # model = AutoModel.from_pretrained(model_name)
 
-    def embed(self, text, model_name="sentence-transformers/all-MiniLM-L6-v2"):
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModel.from_pretrained(model_name)
-
-        if type(text) == str:
-            text = [text]
+        # if type(text) == str:
+        #     text = [text]
         
-        embeddings = []
-        for string in text:
-            tokens = tokenizer(string, return_tensors='pt')
+        # embeddings = []
+        # for string in text:
+        #     tokens = tokenizer(string, return_tensors='pt')
 
-            with torch.no_grad():
-                output = model(**tokens)
+        #     with torch.no_grad():
+        #         output = model(**tokens)
             
-            last_hidden_state = output.last_hidden_state
-            contextual_embeddings = last_hidden_state.mean(dim=1)
-            embeddings.append(contextual_embeddings)
+        #     last_hidden_state = output.last_hidden_state
+        #     contextual_embeddings = last_hidden_state.mean(dim=1)
+        #     embeddings.append(contextual_embeddings)
 
-        return embeddings
+        # return embeddings
+        client = OpenAI()
+        embeddings = client.embeddings.create(
+            model=model_name,
+            input=text,
+            encoding_format="float"
+        )
+        return embeddings.data[0].embedding
     
     def query(self, collection_name, query_text, n_results=3, embed=True):
         collection = self.client.get_collection(collection_name)
         if embed:
-            query_embeddings = self.embed(query_text)[0].tolist()
+            query_embeddings = self.embed(query_text)
             return collection.query(query_embeddings, n_results=n_results)
         else:
             return collection.query(query_text, n_results=n_results)

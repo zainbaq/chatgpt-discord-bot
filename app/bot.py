@@ -89,7 +89,7 @@ if __name__ == '__main__':
     intents.members = True
 
     HISTORY_LENGTH = 8
-    RETENTION_LENGTH = 3
+    RETENTION_LENGTH = 2
 
     vectorstore = create_vector_store()
     
