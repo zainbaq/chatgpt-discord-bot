@@ -1,4 +1,6 @@
 chromadb
+transformers
+torch
 python-dotenv==1.0.0
 aiohttp==3.8.4
 aiosignal==1.3.1
