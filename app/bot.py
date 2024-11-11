@@ -82,7 +82,7 @@ if __name__ == '__main__':
             n=n,
             size="1024x1024"
             )
-        url = response['data'][0]['url'] # must be an image
+        url = response.data[0].url # must be an image
         image_rsp = requests.get(url)
         image = io.BytesIO(image_rsp.content)
         await message.channel.send(file=discord.File(image, "generated_image.png"))
