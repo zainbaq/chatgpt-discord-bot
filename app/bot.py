@@ -1,79 +1,15 @@
-import openai
 import discord
 from discord.ext import commands
 import argparse
-import os
 import io
 import requests
-from dotenv import load_dotenv
-from rag import ConversationVectorStore
 from openai import OpenAI
-import json
+from utils import *
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('-o', '--output', action='store_true')
     return parser.parse_args()
-
-def load_keys():
-    if '.env' in os.listdir():
-        load_dotenv()
-    return os.environ['OPENAI_API_KEY'], os.environ['DISCORD_KEY']
-
-def create_vector_store():
-    return ConversationVectorStore()
-
-def prepare_vector_input(message):
-    print(message['content'])
-    role = message['role']
-    if role == 'assistant':
-        author = 'assistant'
-        query = message['content']
-    else:
-        author, query = message['content'].split(' : ')
-    return json.dumps({'author' : author, 'message': query})
-
-def parse_context(query_result):
-    ids = query_result['ids']
-    documents = query_result['documents']
-    documents = [json.loads(s) for s in documents[0]]
-    return documents
-
-
-def create_chat_prompt(message, context):
-    author = message.author.name.split('#')[0]
-    user_query = message.content.split('> ')[-1]
-    prompt = f"""
-    ** CONTEXT **
-    {context}
-
-    ** USER INPUT **
-    {author} : {user_query}"
-    """
-    prompt_data = {
-        "role": "user", 
-        "content": prompt
-        }
-    return prompt_data
-
-def create_image_analysis_prompt(message, image_urls, context):
-    author = message.author.name.split('#')[0]
-    user_query = message.content.split('> ')[-1]
-
-    prompt = f"""
-    ** CONTEXT **
-    {context}
-
-    ** USER INPUT **
-    {author} : {user_query}"
-    """
-    
-    prompt_data = {
-        "role": "user",
-        "content": [
-            {"type": "text", "text": prompt}] + [{"type":"image_url","image_url": {"url":url}} for url in image_urls],
-    }
-    return prompt_data
 
 if __name__ == '__main__':
 
@@ -139,10 +75,10 @@ if __name__ == '__main__':
     
     # This function runs when an image generation is requested.
     @client.event
-    async def dalle_response(message, n=1):
-        prompt = message.content.split('.dalle ')[-1]
-        response = openai.Image.create(
-            prompt=prompt,
+    async def image_response(message, n=1):
+        response = client.images.generate(
+            model='gpt-4o',
+            prompt=message.content,
             n=n,
             size="1024x1024"
             )
@@ -202,16 +138,16 @@ if __name__ == '__main__':
             # Here we set up the prompt for the chat bot. We're including the message author so
             # it remembers who said what when multiple users are speaking
 
+            create_image = route_user_message(message.content)
 
-            query_result = vectorstore.query("conversations", message.content, n_results=5)
-            context = parse_context(query_result)
-
-            if '.dalle' in message.content:
-                await dalle_response(message)
+            if create_image:
+                await image_response(message)
             elif '.clear' in message.content:
                 MESSAGES = [MESSAGES[0]]
                 await message.channel.send("These violent delights have violent ends.")
             else:
+                query_result = vectorstore.query("conversations", message.content, n_results=5)
+                context = parse_context(query_result)
                 await chat_response(message, context)
 
             await on_memory_full(history_limit=HISTORY_LENGTH, retention=RETENTION_LENGTH)
