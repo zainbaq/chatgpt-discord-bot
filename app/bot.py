@@ -77,7 +77,7 @@ if __name__ == '__main__':
     @client.event
     async def image_response(message, n=1):
         response = openai_client.images.generate(
-            model='gpt-4o',
+            model='dall-e-3',
             prompt=message.content,
             n=n,
             size="1024x1024"
