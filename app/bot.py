@@ -105,7 +105,7 @@ if __name__ == '__main__':
             prompt_data = create_chat_prompt(message, context)
 
         MESSAGES.append(prompt_data)
-
+#
         # Make call to get AI response
         response = openai_client.chat.completions.create(
             model="gpt-4o",
