@@ -76,7 +76,7 @@ if __name__ == '__main__':
     # This function runs when an image generation is requested.
     @client.event
     async def image_response(message, n=1):
-        response = client.images.generate(
+        response = openai_client.images.generate(
             model='gpt-4o',
             prompt=message.content,
             n=n,
