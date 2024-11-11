@@ -19,7 +19,7 @@ def prepare_vector_input(message):
         author = 'assistant'
         query = message['content']
     else:
-        author, query = message['content'].split(' : ')
+        author, query = message['content'][0].split(' : ')
     return json.dumps({'author' : author, 'message': query})
 
 def parse_context(query_result):
