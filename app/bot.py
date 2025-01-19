@@ -5,6 +5,7 @@ import io  # For handling byte streams
 import requests  # For making HTTP requests
 from openai import OpenAI  # OpenAI API client
 from utils import *  # Custom utility functions
+import speech_recognition as sr
 
 def parse_args():
     """
@@ -30,6 +31,12 @@ if __name__ == '__main__':
     # Set up Discord intents
     intents = discord.Intents.default()
     intents.members = True  # Enable access to member data
+    intents.messages = True
+    intents.message_content = True
+    intents.voice_states = True
+    intents.guilds = True
+    intents.guild_voice_states = True
+    intents.guild_messages = True
 
     # Conversation history settings
     HISTORY_LENGTH = 8  # Max length of conversation history before storing
@@ -64,6 +71,61 @@ if __name__ == '__main__':
     async def on_ready():
         """Event handler when the bot is ready."""
         print('Bot is ready.')
+
+    @client.command(name='join')
+    async def join(ctx, *, channel_name: str):
+        guild = ctx.guild
+        voice_channel = discord.utils.get(guild.voice_channels, name=channel_name)
+
+        if voice_channel is None:
+            await ctx.send(f'Voice channel "{channel_name}" not found.')
+            return
+
+        if ctx.voice_client is not None:
+            await ctx.voice_client.move_to(voice_channel)
+        else:
+            await voice_channel.connect()
+
+        await ctx.send(f'Joined voice channel: {channel_name}')
+
+    @client.event
+    async def on_voice_state_update(member, before, after):
+        if member == client.user and after.channel is not None:
+            await listen_and_respond(after.channel.guild)
+
+    async def listen_and_respond(guild):
+        recognizer = sr.Recognizer()
+        voice_client = guild.voice_client
+
+        if voice_client is None:
+            return
+
+        while True:
+            with sr.Microphone() as source:
+                try:
+                    print("Listening for 'Hey GPT'...")
+                    audio = recognizer.listen(source, timeout=10, phrase_time_limit=5)
+                    command = recognizer.recognize_google(audio).lower()
+
+                    if "hey gpt" in command:
+                        print("Command recognized. Processing query...")
+                        await guild.text_channels[0].send("What is your question?")
+
+                        query_audio = recognizer.listen(source, timeout=15, phrase_time_limit=10)
+                        query = recognizer.recognize_google(query_audio)
+
+                        print(f"Query: {query}")
+                        response = await get_gpt_response(query)
+
+                        print(f"Response: {response}")
+                        await voice_response(response, voice_client)
+
+                except sr.UnknownValueError:
+                    print("Could not understand audio.")
+                except sr.RequestError as e:
+                    print(f"Speech recognition error: {e}")
+                except asyncio.TimeoutError:
+                    print("Timeout occurred.")
 
     @client.event
     async def on_memory_full(history_limit=HISTORY_LENGTH, retention=RETENTION_LENGTH):
