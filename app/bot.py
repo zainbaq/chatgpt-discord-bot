@@ -6,6 +6,15 @@ import requests  # For making HTTP requests
 from openai import OpenAI  # OpenAI API client
 from utils import *  # Custom utility functions
 import speech_recognition as sr
+import asyncio
+import tempfile
+from gtts import gTTS
+
+import discord
+from discord import opus
+
+# discord.opus.load_opus(name=)
+print(opus.is_loaded())  # Should print True if Opus is properly loaded
 
 def parse_args():
     """
@@ -28,15 +37,16 @@ if __name__ == '__main__':
     # Initialize OpenAI client with API key
     openai_client = OpenAI(api_key=openai_api_key)
 
-    # Set up Discord intents
-    intents = discord.Intents.default()
-    intents.members = True  # Enable access to member data
-    intents.messages = True
-    intents.message_content = True
-    intents.voice_states = True
-    intents.guilds = True
-    intents.guild_voice_states = True
-    intents.guild_messages = True
+    # # Set up Discord intents
+    # intents = discord.Intents.default()
+    # intents.members = True  # Enable access to member data
+    # intents.messages = True
+    # intents.message_content = True
+    # intents.voice_states = True
+    # intents.guilds = True
+    # # intents.guild_voice_states = True
+    # intents.guild_messages = True
+    intents = discord.Intents.all()
 
     # Conversation history settings
     HISTORY_LENGTH = 8  # Max length of conversation history before storing
@@ -66,11 +76,17 @@ if __name__ == '__main__':
 
     # Initialize message history with system role
     MESSAGES = [{"role": "system", "content": role}]
+    
 
     @client.event
     async def on_ready():
         """Event handler when the bot is ready."""
         print('Bot is ready.')
+
+    @client.command(name='test')
+    async def test(ctx):
+        # print('test')
+        await ctx.send('Test command works!')
 
     @client.command(name='join')
     async def join(ctx, *, channel_name: str):
@@ -86,7 +102,20 @@ if __name__ == '__main__':
         else:
             await voice_channel.connect()
 
-        await ctx.send(f'Joined voice channel: {channel_name}')
+        # Confirm connection
+        if ctx.voice_client and ctx.voice_client.is_connected():
+            await ctx.send(f'Joined voice channel: {channel_name}')
+        else:
+            await ctx.send(f'Failed to connect to voice channel: {channel_name}')
+
+
+    @client.command(name='disconnect')
+    async def disconnect(ctx):
+        if ctx.voice_client is not None:
+            await ctx.voice_client.disconnect()
+            await ctx.send("Disconnected from the voice channel.")
+        else:
+            await ctx.send("I'm not connected to any voice channel.")
 
     @client.event
     async def on_voice_state_update(member, before, after):
@@ -109,7 +138,7 @@ if __name__ == '__main__':
 
                     if "hey gpt" in command:
                         print("Command recognized. Processing query...")
-                        await guild.text_channels[0].send("What is your question?")
+                        await discord.utils.get(guild.text_channels, name='bot-commands').send("What is your question?")
 
                         query_audio = recognizer.listen(source, timeout=15, phrase_time_limit=10)
                         query = recognizer.recognize_google(query_audio)
@@ -118,7 +147,7 @@ if __name__ == '__main__':
                         response = await get_gpt_response(query)
 
                         print(f"Response: {response}")
-                        await voice_response(response, voice_client)
+                        await voice_response(response, guild, voice_client)
 
                 except sr.UnknownValueError:
                     print("Could not understand audio.")
@@ -126,6 +155,35 @@ if __name__ == '__main__':
                     print(f"Speech recognition error: {e}")
                 except asyncio.TimeoutError:
                     print("Timeout occurred.")
+
+    async def get_gpt_response(query):
+        # Make call to get AI response
+        response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": query}],
+            max_tokens=150
+        )
+        # Extract AI response and add to conversation history
+        ai_message = response.choices[0].message.content
+        return ai_message
+
+    async def voice_response(response, guild, voice_client):
+        if voice_client is None or not voice_client.is_connected():
+            print("Bot is not connected to a voice channel.")
+            return
+        
+        voice_client = guild.voice_client
+
+        tts = gTTS(text=response, lang='en')
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_audio:
+            tts.save(temp_audio.name)
+            temp_audio_path = temp_audio.name
+
+        audio_source = discord.FFmpegOpusAudio(temp_audio_path)
+        voice_client.play(audio_source, after=lambda e: os.remove(temp_audio_path))
+
+        while voice_client.is_playing():
+            await asyncio.sleep(1)
 
     @client.event
     async def on_memory_full(history_limit=HISTORY_LENGTH, retention=RETENTION_LENGTH):
@@ -236,6 +294,8 @@ if __name__ == '__main__':
         global MESSAGES
         global vectorstore
 
+        await client.process_commands(message)
+
         # Ignore messages from the bot itself
         if message.author == client.user:
             return
@@ -266,6 +326,8 @@ if __name__ == '__main__':
 
             # Manage conversation history to prevent exceeding limits
             await on_memory_full()
+
+    print(f"Registered commands: {list(client.all_commands)}")
 
     # Run the bot with the Discord API key
     client.run(discord_api_key)
