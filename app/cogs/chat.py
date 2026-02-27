@@ -101,6 +101,15 @@ class ChatCog(commands.Cog):
                 print(f"[ChatCog] Failed to send code interpreter image: {e}")
                 await message.channel.send(f"⚠️ Couldn't send generated image #{i + 1}.")
 
+        # --- Send DALL-E images generated inline via the generate_image function tool ---
+        for i, img_bytes in enumerate(result.output_images):
+            try:
+                discord_file = discord.File(io.BytesIO(img_bytes), filename=f"image_{i + 1}.png")
+                await message.channel.send(file=discord_file)
+            except Exception as e:
+                print(f"[ChatCog] Failed to send DALL-E image: {e}")
+                await message.channel.send(f"⚠️ Couldn't send generated image #{i + 1}.")
+
     # ------------------------------------------------------------------
     # Slash: /image
     # ------------------------------------------------------------------
