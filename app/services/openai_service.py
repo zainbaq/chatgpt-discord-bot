@@ -1,0 +1,271 @@
+"""
+Wraps the OpenAI Responses API for agentic chat, image generation, and
+file/vector-store management.
+
+Multi-turn conversation:
+  Each call to chat() passes `previous_response_id` so OpenAI reconstructs
+  the full conversation chain server-side. We only persist the last response
+  ID per channel (via ThreadStore).
+
+Agentic tools enabled per chat() call:
+  - web_search_preview  — real-time web search with citations
+  - code_interpreter    — sandboxed Python execution; can produce image outputs
+  - file_search         — semantic search over uploaded documents (RAG)
+"""
+
+import os
+import io
+from dataclasses import dataclass, field
+
+import aiohttp
+from openai import AsyncOpenAI
+from openai.types.responses import Response
+
+from app.config import settings
+from app.services.thread_store import ThreadStore
+
+
+# Image file extensions — passed as CDN URLs to the vision model (no upload).
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
+# Document extensions — uploaded to the Files API for RAG / code_interpreter.
+DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".md", ".docx", ".py", ".js", ".ts", ".csv", ".json"}
+
+
+@dataclass
+class ChatResult:
+    """Return value of OpenAIService.chat()."""
+    text: str
+    # URLs of images produced by the code_interpreter tool (e.g. matplotlib plots).
+    # Each URL should be downloaded and sent as a Discord file attachment.
+    output_image_urls: list[str] = field(default_factory=list)
+
+
+class OpenAIService:
+    def __init__(self, thread_store: ThreadStore):
+        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        self.thread_store = thread_store
+        # Shared vector store for all uploaded documents.
+        # Seeded from env var so it survives across restarts.
+        self.vector_store_id: str | None = settings.VECTOR_STORE_ID
+
+    # ------------------------------------------------------------------
+    # Chat
+    # ------------------------------------------------------------------
+
+    async def chat(
+        self,
+        channel_id: int,
+        user_input: str,
+        *,
+        image_urls: list[str] | None = None,
+        file_ids: list[str] | None = None,
+        username: str = "User",
+    ) -> ChatResult:
+        """
+        Send a message to the Responses API and return a ChatResult.
+
+        Args:
+            channel_id:  Discord channel ID used to look up/store conversation thread.
+            user_input:  The user's text message (@ mention stripped).
+            image_urls:  Discord CDN URLs for image attachments — passed directly
+                         to the vision model.
+            file_ids:    OpenAI file IDs for document attachments already uploaded
+                         via upload_file(). Made available to the code interpreter.
+            username:    Discord display name of the sender (included in prompt).
+        """
+        previous_response_id = await self.thread_store.get(channel_id)
+
+        # Build the message content list.
+        # input_text / input_image are content items; they must be wrapped in a
+        # top-level {"type": "message", "role": "user", "content": [...]} object.
+        content: list[dict] = [
+            {
+                "type": "input_text",
+                "text": f"{username}: {user_input}",
+            }
+        ]
+
+        for url in (image_urls or []):
+            content.append({
+                "type": "input_image",
+                "detail": "auto",   # Required by the SDK TypedDict
+                "image_url": url,
+            })
+
+        user_message = {
+            "type": "message",
+            "role": "user",
+            "content": content,
+        }
+
+        # Build the code_interpreter container — pass any uploaded file IDs so
+        # the sandbox can read them directly (useful for CSV/data analysis).
+        code_interpreter_container: dict = {"type": "auto"}
+        if file_ids:
+            code_interpreter_container["file_ids"] = file_ids
+
+        # Build tool list
+        tools: list[dict] = [
+            {"type": "web_search_preview"},
+            {
+                "type": "code_interpreter",
+                "container": code_interpreter_container,
+            },
+        ]
+
+        if self.vector_store_id:
+            tools.append({
+                "type": "file_search",
+                "vector_store_ids": [self.vector_store_id],
+            })
+
+        kwargs: dict = {
+            "model": settings.CHAT_MODEL,
+            "instructions": settings.BOT_SYSTEM_PROMPT,
+            "input": [user_message],
+            "tools": tools,
+            "max_output_tokens": settings.MAX_OUTPUT_TOKENS,
+            # Without this, code_interpreter_call.outputs is always None
+            "include": ["code_interpreter_call.outputs"],
+        }
+
+        if previous_response_id:
+            kwargs["previous_response_id"] = previous_response_id
+
+        response: Response = await self.client.responses.create(**kwargs)
+
+        # Persist the new response ID for this channel
+        await self.thread_store.set(channel_id, response.id)
+
+        return self._parse_response(response)
+
+    # ------------------------------------------------------------------
+    # Image generation
+    # ------------------------------------------------------------------
+
+    async def generate_image(self, prompt: str) -> bytes:
+        """
+        Generate an image with DALL-E 3, download the bytes, and return them.
+        We download immediately because DALL-E CDN URLs expire after ~1 hour.
+        """
+        result = await self.client.images.generate(
+            model=settings.IMAGE_MODEL,
+            prompt=prompt,
+            n=1,
+            size="1024x1024",
+        )
+        url = result.data[0].url
+        return await self.download_url(url)
+
+    # ------------------------------------------------------------------
+    # File handling
+    # ------------------------------------------------------------------
+
+    async def upload_file(self, file_bytes: bytes, filename: str) -> str:
+        """
+        Upload a file to the OpenAI Files API and return its file_id.
+        Tagged for 'assistants' purpose so it can be added to a vector store.
+        """
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = filename
+
+        uploaded = await self.client.files.create(
+            file=(filename, file_obj, "application/octet-stream"),
+            purpose="assistants",
+        )
+        return uploaded.id
+
+    async def add_to_vector_store(self, file_id: str):
+        """
+        Add an uploaded file to the shared vector store.
+        Creates the vector store on first call and caches its ID in-process.
+        Set VECTOR_STORE_ID env var to reuse the same store across restarts.
+        """
+        if not self.vector_store_id:
+            store = await self.client.vector_stores.create(
+                name="discord-bot-knowledge"
+            )
+            self.vector_store_id = store.id
+            print(f"[OpenAIService] Created vector store: {self.vector_store_id}")
+
+        await self.client.vector_stores.files.create(
+            vector_store_id=self.vector_store_id,
+            file_id=file_id,
+        )
+
+    async def list_vector_store_files(self) -> int:
+        """Return the number of files in the vector store (for /status)."""
+        if not self.vector_store_id:
+            return 0
+        files = await self.client.vector_stores.files.list(
+            vector_store_id=self.vector_store_id
+        )
+        return len(files.data)
+
+    # ------------------------------------------------------------------
+    # Conversation management
+    # ------------------------------------------------------------------
+
+    async def clear_channel(self, channel_id: int):
+        """Reset conversation history for a channel."""
+        await self.thread_store.delete(channel_id)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_response(response: Response) -> ChatResult:
+        """
+        Walk the response output items and collect:
+          - Text from assistant message blocks
+          - Image URLs from code_interpreter outputs (e.g. matplotlib plots)
+        """
+        text_parts: list[str] = []
+        output_image_urls: list[str] = []
+
+        for item in response.output:
+            if item.type == "message":
+                # Final assistant message — extract all text blocks
+                for block in item.content:
+                    if block.type == "output_text":
+                        text_parts.append(block.text)
+
+            elif item.type == "code_interpreter_call":
+                # Code interpreter ran — collect any image outputs
+                for output in (item.outputs or []):
+                    if output.type == "image":
+                        output_image_urls.append(output.url)
+
+        return ChatResult(
+            text="\n".join(text_parts).strip() or "_(no response)_",
+            output_image_urls=output_image_urls,
+        )
+
+    @staticmethod
+    async def download_url(url: str) -> bytes:
+        """Download bytes from a URL (used for code interpreter images and DALL-E).
+
+        Handles both HTTP URLs and base64 data URLs (data:image/png;base64,...),
+        the latter being returned by the code interpreter tool.
+        """
+        if url.startswith("data:"):
+            import base64
+            # Format: data:<mediatype>;base64,<payload>
+            _, _, payload = url.partition(",")
+            return base64.b64decode(payload)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                resp.raise_for_status()
+                return await resp.read()
+
+    @staticmethod
+    def is_image(filename: str) -> bool:
+        ext = os.path.splitext(filename.lower())[1]
+        return ext in IMAGE_EXTENSIONS
+
+    @staticmethod
+    def is_document(filename: str) -> bool:
+        ext = os.path.splitext(filename.lower())[1]
+        return ext in DOCUMENT_EXTENSIONS

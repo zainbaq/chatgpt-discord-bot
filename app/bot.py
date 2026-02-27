@@ -1,333 +1,46 @@
-import discord  # Discord API for interacting with Discord
-from discord.ext import commands  # Extension for Discord commands
-import argparse  # For parsing command-line arguments
-import io  # For handling byte streams
-import requests  # For making HTTP requests
-from openai import OpenAI  # OpenAI API client
-from utils import *  # Custom utility functions
-import speech_recognition as sr
-import asyncio
-import tempfile
-from gtts import gTTS
+"""
+Bot factory.
+
+Creates the discord.py Bot instance, registers intents, and loads cogs via
+setup_hook (which runs before the bot connects to Discord).
+"""
 
 import discord
-from discord import opus
+from discord.ext import commands
 
-# discord.opus.load_opus(name=)
-print(opus.is_loaded())  # Should print True if Opus is properly loaded
+from app.services.thread_store import ThreadStore
+from app.services.openai_service import OpenAIService
+from app.config import settings
 
-def parse_args():
-    """
-    Parse command-line arguments.
 
-    Returns:
-        argparse.Namespace: Parsed command-line arguments.
-    """
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-o', '--output', action='store_true')
-    return parser.parse_args()
+def create_bot(openai_service: OpenAIService) -> commands.Bot:
+    # Only request the intents we actually need
+    intents = discord.Intents.default()
+    intents.message_content = True  # Required to read message text for @mentions
 
-if __name__ == '__main__':
+    bot = commands.Bot(
+        # Prefix only fires on @mention — slash commands are the primary interface
+        command_prefix=commands.when_mentioned,
+        intents=intents,
+        help_command=None,
+    )
 
-    args = parse_args()
+    async def setup_hook():
+        from app.cogs.chat import ChatCog
+        from app.cogs.admin import AdminCog
 
-    # Load API Keys from external source
-    openai_api_key, discord_api_key = load_keys()
+        await bot.add_cog(ChatCog(bot, openai_service))
+        await bot.add_cog(AdminCog(bot, openai_service))
 
-    # Initialize OpenAI client with API key
-    openai_client = OpenAI(api_key=openai_api_key)
+        # Sync slash commands globally (can take up to 1 hour to propagate on first deploy;
+        # use guild-scoped sync during development for instant updates).
+        await bot.tree.sync()
+        print(f"[Bot] Slash commands synced. Logged in as {bot.user}")
 
-    # # Set up Discord intents
-    # intents = discord.Intents.default()
-    # intents.members = True  # Enable access to member data
-    # intents.messages = True
-    # intents.message_content = True
-    # intents.voice_states = True
-    # intents.guilds = True
-    # # intents.guild_voice_states = True
-    # intents.guild_messages = True
-    intents = discord.Intents.all()
+    bot.setup_hook = setup_hook
 
-    # Conversation history settings
-    HISTORY_LENGTH = 8  # Max length of conversation history before storing
-    RETENTION_LENGTH = 2  # Number of recent messages to retain
-
-    # Initialize vector store for long-term conversation memory
-    vectorstore = create_vector_store()
-    
-    # Set the system role of the assistant
-    role = """
-    You are a helpful, funny and sarcastic assistant to a group of individuals.
-
-    You will receive questions from different users. Answer these questions to the best of your knowledge.
-
-    ** EXAMPLE INPUT **
-    <CONTEXT>
-    <USER_123> : When did Pakistan gain independence?
-
-    ** EXAMPLE OUTPUT **
-    Pakistan gained independence on the 14th of August 1947.
-
-    You may be asked about other users and your goal is to be a part of our group.
-    """
-
-    # Initialize Discord bot with command prefix and intents
-    client = commands.Bot(command_prefix='!', intents=intents)
-
-    # Initialize message history with system role
-    MESSAGES = [{"role": "system", "content": role}]
-    
-
-    @client.event
+    @bot.event
     async def on_ready():
-        """Event handler when the bot is ready."""
-        print('Bot is ready.')
+        print(f"[Bot] Ready — {bot.user} (id: {bot.user.id})")
 
-    @client.command(name='test')
-    async def test(ctx):
-        # print('test')
-        await ctx.send('Test command works!')
-
-    @client.command(name='join')
-    async def join(ctx, *, channel_name: str):
-        guild = ctx.guild
-        voice_channel = discord.utils.get(guild.voice_channels, name=channel_name)
-
-        if voice_channel is None:
-            await ctx.send(f'Voice channel "{channel_name}" not found.')
-            return
-
-        if ctx.voice_client is not None:
-            await ctx.voice_client.move_to(voice_channel)
-        else:
-            await voice_channel.connect()
-
-        # Confirm connection
-        if ctx.voice_client and ctx.voice_client.is_connected():
-            await ctx.send(f'Joined voice channel: {channel_name}')
-        else:
-            await ctx.send(f'Failed to connect to voice channel: {channel_name}')
-
-
-    @client.command(name='disconnect')
-    async def disconnect(ctx):
-        if ctx.voice_client is not None:
-            await ctx.voice_client.disconnect()
-            await ctx.send("Disconnected from the voice channel.")
-        else:
-            await ctx.send("I'm not connected to any voice channel.")
-
-    @client.event
-    async def on_voice_state_update(member, before, after):
-        if member == client.user and after.channel is not None:
-            await listen_and_respond(after.channel.guild)
-
-    async def listen_and_respond(guild):
-        recognizer = sr.Recognizer()
-        voice_client = guild.voice_client
-
-        if voice_client is None:
-            return
-
-        while True:
-            with sr.Microphone() as source:
-                try:
-                    print("Listening for 'Hey GPT'...")
-                    audio = recognizer.listen(source, timeout=10, phrase_time_limit=5)
-                    command = recognizer.recognize_google(audio).lower()
-
-                    if "hey gpt" in command:
-                        print("Command recognized. Processing query...")
-                        await discord.utils.get(guild.text_channels, name='bot-commands').send("What is your question?")
-
-                        query_audio = recognizer.listen(source, timeout=15, phrase_time_limit=10)
-                        query = recognizer.recognize_google(query_audio)
-
-                        print(f"Query: {query}")
-                        response = await get_gpt_response(query)
-
-                        print(f"Response: {response}")
-                        await voice_response(response, guild, voice_client)
-
-                except sr.UnknownValueError:
-                    print("Could not understand audio.")
-                except sr.RequestError as e:
-                    print(f"Speech recognition error: {e}")
-                except asyncio.TimeoutError:
-                    print("Timeout occurred.")
-
-    async def get_gpt_response(query):
-        # Make call to get AI response
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": query}],
-            max_tokens=150
-        )
-        # Extract AI response and add to conversation history
-        ai_message = response.choices[0].message.content
-        return ai_message
-
-    async def voice_response(response, guild, voice_client):
-        if voice_client is None or not voice_client.is_connected():
-            print("Bot is not connected to a voice channel.")
-            return
-        
-        voice_client = guild.voice_client
-
-        tts = gTTS(text=response, lang='en')
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_audio:
-            tts.save(temp_audio.name)
-            temp_audio_path = temp_audio.name
-
-        audio_source = discord.FFmpegOpusAudio(temp_audio_path)
-        voice_client.play(audio_source, after=lambda e: os.remove(temp_audio_path))
-
-        while voice_client.is_playing():
-            await asyncio.sleep(1)
-
-    @client.event
-    async def on_memory_full(history_limit=HISTORY_LENGTH, retention=RETENTION_LENGTH):
-        """
-        Handles memory management when conversation history exceeds limit.
-        Stores old messages in vector store and retains recent messages.
-
-        Args:
-            history_limit (int): Max length of conversation history before storing.
-            retention (int): Number of recent messages to retain.
-        """
-        global MESSAGES
-        global vectorstore
-
-        if len(MESSAGES) >= history_limit:
-            print('Storing old messages to vector store and trimming history.')
-            # Extract messages to store and messages to retain
-            messages_to_store = MESSAGES[1:-retention]  # Exclude system prompt and retain last messages
-            retained_messages = [MESSAGES[0]] + MESSAGES[-retention:]  # Keep system prompt and last messages
-
-            # Prepare messages for vector store
-            prepared_messages = [prepare_vector_input(m) for m in messages_to_store]
-
-            # Insert old messages into vector store
-            vectorstore.insert_conversation_to_memory(prepared_messages)
-
-            # Update MESSAGES with retained messages
-            MESSAGES = retained_messages
-
-    @client.event
-    async def image_response(message, n=1):
-        """
-        Generates an image based on the user's prompt and sends it to the channel.
-
-        Args:
-            message (discord.Message): The message containing the prompt.
-            n (int): Number of images to generate.
-        """
-        try:
-            response = openai_client.images.generate(
-                model='dall-e-3',
-                prompt=message.content,
-                n=n,
-                size="1024x1024"
-            )
-            url = response.data[0].url  # URL of the generated image
-            image_rsp = requests.get(url)
-            image = io.BytesIO(image_rsp.content)
-            await message.channel.send(file=discord.File(image, "generated_image.png"))
-        except Exception as e:
-            await message.channel.send("Sorry, I couldn't generate the image.")
-            print(f"Error generating image: {e}")
-
-    @client.event
-    async def chat_response(message, context):
-        """
-        Generates a chat response based on the user's message and context.
-
-        Args:
-            message (discord.Message): The message from the user.
-            context (str): The context retrieved from the vector store.
-        """
-        image_urls = []
-        if message.attachments:
-            # Check for image attachments and collect URLs
-            for attachment in message.attachments:
-                if attachment.content_type and 'image' in attachment.content_type:
-                    image_urls.append(attachment.url)
-
-        if image_urls:
-            # Create prompt for image analysis
-            prompt_data = create_image_analysis_prompt(message, image_urls, context)
-        else:
-            # Create standard chat prompt
-            prompt_data = create_chat_prompt(message, context)
-
-        # Add user's prompt to message history
-        MESSAGES.append(prompt_data)
-
-        try:
-            # Make call to get AI response
-            response = openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=MESSAGES,
-                max_tokens=150
-            )
-
-            # Extract AI response and add to conversation history
-            ai_message = response.choices[0].message.content
-            response_message = {"role": "assistant", "content": ai_message}
-            MESSAGES.append(response_message)
-
-            # Send AI response to channel
-            await message.channel.send(ai_message)
-        except Exception as e:
-            await message.channel.send("Sorry, I couldn't process your request.")
-            print(f"Error generating chat response: {e}")
-
-    @client.event
-    async def on_message(message):
-        """
-        Event handler for incoming messages.
-        Processes messages that mention the bot and routes them accordingly.
-
-        Args:
-            message (discord.Message): The incoming message.
-        """
-        global MESSAGES
-        global vectorstore
-
-        await client.process_commands(message)
-
-        # Ignore messages from the bot itself
-        if message.author == client.user:
-            return
-
-        # Check if the bot is mentioned in the message
-        if client.user in message.mentions:
-
-            # Extract author's name (excluding discriminator)
-            author = message.author.name
-
-            # Determine if an image should be created based on the message content
-            create_image = route_user_message(message.content)
-
-            if create_image:
-                # Handle image generation
-                await image_response(message)
-            elif '.clear' in message.content.lower():
-                # Clear conversation history except system prompt
-                MESSAGES = [MESSAGES[0]]
-                await message.channel.send("Conversation history cleared.")
-            else:
-                # Retrieve context from vector store based on user's message
-                query_result = vectorstore.query("conversations", message.content, n_results=5)
-                context = parse_context(query_result)
-
-                # Generate chat response with context
-                await chat_response(message, context)
-
-            # Manage conversation history to prevent exceeding limits
-            await on_memory_full()
-
-    print(f"Registered commands: {list(client.all_commands)}")
-
-    # Run the bot with the Discord API key
-    client.run(discord_api_key)
+    return bot
