@@ -19,11 +19,15 @@ class Settings(BaseSettings):
             "running Python, and a file search tool for documents users have uploaded. "
             "Use these tools automatically when they would help answer the question. "
             "Keep responses concise and conversational — this is a chat app, not a report. "
-            "IMPORTANT: When you create files in the code interpreter, never reference sandbox "
-            "paths like sandbox:/mnt/data/. Files created there are not accessible to users. "
-            "Instead, always output the full file contents directly in your response as a "
-            "code block so users can read or copy them. Images are the only exception — "
-            "those are sent automatically as attachments."
+            "IMPORTANT: When you create any file in the code interpreter that the user would "
+            "want to download (txt, csv, pdf, docx, json, py, etc.), you MUST immediately "
+            "run this code after creating it to emit a download marker:\n"
+            "  import base64\n"
+            "  print('FILE_DOWNLOAD:<filename>:' + base64.b64encode(open('/mnt/data/<filename>', 'rb').read()).decode())\n"
+            "Replace <filename> with the actual filename. The bot intercepts these markers and "
+            "sends the files as Discord attachments automatically. "
+            "NEVER reference sandbox paths like /mnt/data/ in your text response — just tell "
+            "the user the file has been sent. Images are handled separately and sent automatically."
         )
     )
 

@@ -16,6 +16,7 @@ Agentic tools enabled per chat() call:
 import os
 import io
 import json
+import base64
 from dataclasses import dataclass, field
 
 import aiohttp
@@ -287,7 +288,7 @@ class OpenAIService:
         """
         text_parts: list[str] = []
         output_image_urls: list[str] = []
-        file_refs: list[tuple[str, str]] = []
+        file_refs: list[tuple[bytes, str]] = []
 
         for item in response.output:
             if item.type == "message":
@@ -297,17 +298,30 @@ class OpenAIService:
                         text_parts.append(block.text)
 
             elif item.type == "code_interpreter_call":
-                # Code interpreter ran — collect image outputs.
-                # Note: non-image files created in the sandbox (/mnt/data/) are not
-                # accessible via the Responses API. The system prompt instructs the
-                # model to output file contents inline instead.
+                # Code interpreter ran — collect image outputs and any FILE_DOWNLOAD
+                # markers emitted to stdout by the model following system prompt instructions.
                 for output in (item.outputs or []):
                     if output.type == "image":
                         output_image_urls.append(output.url)
+                    elif output.type == "logs" and output.logs:
+                        for line in output.logs.splitlines():
+                            if not line.startswith("FILE_DOWNLOAD:"):
+                                continue
+                            # Format: FILE_DOWNLOAD:<filename>:<base64_content>
+                            parts = line.split(":", 2)
+                            if len(parts) != 3:
+                                continue
+                            _, filename, b64_content = parts
+                            try:
+                                file_bytes = base64.b64decode(b64_content)
+                                file_refs.append((file_bytes, filename.strip()))
+                            except Exception:
+                                pass  # malformed marker — skip silently
 
         return ChatResult(
             text="\n".join(text_parts).strip() or "_(no response)_",
             output_image_urls=output_image_urls,
+            output_files=file_refs,
         ), file_refs
 
     @staticmethod
