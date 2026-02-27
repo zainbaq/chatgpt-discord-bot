@@ -23,7 +23,7 @@ from app.api import create_app
 
 async def main():
     # --- Shared services ---
-    thread_store = ThreadStore(db_path=settings.THREADS_DB_PATH)
+    thread_store = ThreadStore(database_url=settings.DATABASE_URL)
     await thread_store.init()
 
     openai_service = OpenAIService(thread_store=thread_store)

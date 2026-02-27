@@ -1,4 +1,3 @@
-import os
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
@@ -31,10 +30,9 @@ class Settings(BaseSettings):
     # Web server
     PORT: int = Field(default=8000)
 
-    # Path to SQLite DB for per-channel thread tracking
-    THREADS_DB_PATH: str = Field(
-        default=os.path.join(os.path.dirname(__file__), "data", "threads.db")
-    )
+    # Postgres connection URL — set automatically by Heroku Postgres add-on.
+    # For local dev, set DATABASE_URL in .env (e.g. postgresql://localhost/discord_bot)
+    DATABASE_URL: str
 
     class Config:
         env_file = ".env"
