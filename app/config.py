@@ -18,7 +18,12 @@ class Settings(BaseSettings):
             "You have access to web search for current information, a code interpreter for "
             "running Python, and a file search tool for documents users have uploaded. "
             "Use these tools automatically when they would help answer the question. "
-            "Keep responses concise and conversational — this is a chat app, not a report."
+            "Keep responses concise and conversational — this is a chat app, not a report. "
+            "IMPORTANT: When you create files in the code interpreter, never reference sandbox "
+            "paths like sandbox:/mnt/data/. Files created there are not accessible to users. "
+            "Instead, always output the full file contents directly in your response as a "
+            "code block so users can read or copy them. Images are the only exception — "
+            "those are sent automatically as attachments."
         )
     )
 

@@ -195,17 +195,8 @@ class OpenAIService:
         # Persist the final response ID for this channel
         await self.thread_store.set(channel_id, response.id)
 
-        result, file_refs = self._parse_response(response)
+        result, _ = self._parse_response(response)
         result.output_images = dalle_images
-
-        # Download any non-image files produced by the code interpreter
-        for file_id, filename in file_refs:
-            try:
-                content = await self.client.files.content(file_id)
-                result.output_files.append((content.read(), filename))
-            except Exception as e:
-                print(f"[OpenAIService] Failed to download file {filename}: {e}")
-
         return result
 
     # ------------------------------------------------------------------
@@ -306,13 +297,13 @@ class OpenAIService:
                         text_parts.append(block.text)
 
             elif item.type == "code_interpreter_call":
-                # Code interpreter ran — collect image and file outputs
+                # Code interpreter ran — collect image outputs.
+                # Note: non-image files created in the sandbox (/mnt/data/) are not
+                # accessible via the Responses API. The system prompt instructs the
+                # model to output file contents inline instead.
                 for output in (item.outputs or []):
                     if output.type == "image":
                         output_image_urls.append(output.url)
-                    elif output.type == "files":
-                        for f in output.files:
-                            file_refs.append((f.file_id, f.name))
 
         return ChatResult(
             text="\n".join(text_parts).strip() or "_(no response)_",
