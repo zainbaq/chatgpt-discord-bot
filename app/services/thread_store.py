@@ -22,7 +22,10 @@ class ThreadStore:
         self.pool: asyncpg.Pool | None = None
 
     async def init(self):
-        self.pool = await asyncpg.create_pool(self.database_url)
+        # Heroku Postgres requires SSL; skip SSL only for local connections.
+        is_local = any(h in self.database_url for h in ("localhost", "127.0.0.1"))
+        ssl = None if is_local else "require"
+        self.pool = await asyncpg.create_pool(self.database_url, ssl=ssl)
         await self.pool.execute("""
             CREATE TABLE IF NOT EXISTS channel_threads (
                 channel_id  BIGINT PRIMARY KEY,
